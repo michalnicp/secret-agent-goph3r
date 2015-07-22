@@ -13,13 +13,20 @@ import (
 type Client struct {
 	conn     net.Conn
 	nickname string
-	room     string
 	ch       chan Message
 }
 
 type Message struct {
-	client Client
-	text   string
+	from Client
+	text string
+}
+
+type Room struct {
+	name    string
+	clients map[net.Conn]*Client
+	addchan chan *Client
+	rmchan  chan Client
+	msgchan chan Message
 }
 
 func main() {
@@ -29,11 +36,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	msgchan := make(chan Message)
-	addchan := make(chan Client)
-	rmchan := make(chan Client)
-
-	go handleMessages(msgchan, addchan, rmchan)
+	rooms := make(map[string]*Room)
 
 	for {
 		conn, err := ln.Accept()
@@ -42,7 +45,7 @@ func main() {
 			continue
 		}
 
-		go handleConnection(conn, msgchan, addchan, rmchan)
+		go handleConnection(conn, rooms)
 	}
 }
 
@@ -54,8 +57,8 @@ func (c Client) ReadLinesInto(ch chan<- Message) {
 			break
 		}
 		message := Message{
-			client: c,
-			text:   fmt.Sprintf("%s: %s", c.nickname, line),
+			from: c,
+			text: fmt.Sprintf("%s: %s", c.nickname, line),
 		}
 		ch <- message
 	}
@@ -63,7 +66,7 @@ func (c Client) ReadLinesInto(ch chan<- Message) {
 
 func (c Client) WriteLinesFrom(ch <-chan Message) {
 	for msg := range ch {
-		if msg.client.room == c.room && msg.client != c {
+		if msg.from != c {
 			_, err := io.WriteString(c.conn, msg.text)
 			if err != nil {
 				return
@@ -84,55 +87,66 @@ func promptRoom(c net.Conn, bufc *bufio.Reader) string {
 	return string(room)
 }
 
-func handleConnection(c net.Conn, msgchan chan<- Message, addchan chan<- Client, rmchan chan<- Client) {
+func handleConnection(c net.Conn, rooms map[string]*Room) {
 	bufc := bufio.NewReader(c)
 	defer c.Close()
 	client := Client{
 		conn:     c,
 		nickname: promptNick(c, bufc),
-		room:     promptRoom(c, bufc),
 		ch:       make(chan Message),
 	}
 	if strings.TrimSpace(client.nickname) == "" {
 		io.WriteString(c, "Invalid Username\n")
 		return
 	}
+	roomName := promptRoom(c, bufc)
+	room, ok := rooms[roomName]
+	if !ok {
+		// Create a new room with name
+		room = &Room{
+			name:    roomName,
+			clients: make(map[net.Conn]*Client, 0),
+			addchan: make(chan *Client),
+			rmchan:  make(chan Client),
+			msgchan: make(chan Message),
+		}
+		rooms[roomName] = room
+		go handleMessages(rooms[roomName])
+	}
 
 	// Register user
-	addchan <- client
+	room.addchan <- &client
 	defer func() {
-		msgchan <- Message{
+		room.msgchan <- Message{
 			text: fmt.Sprintf("User %s left the chat room.\n", client.nickname),
 		}
 		log.Printf("Connection from %v closed.\n", c.RemoteAddr())
-		rmchan <- client
+		room.rmchan <- client
 	}()
-	io.WriteString(c, fmt.Sprintf("Welcome to room %s, %s!\n\n", client.room, client.nickname))
-	msgchan <- Message{
-		text: fmt.Sprintf("New user %s has joined the chat room.\n", client.nickname),
+	io.WriteString(c, fmt.Sprintf("Hi %s! Welcome to room %s!\n\n", client.nickname, roomName))
+	room.msgchan <- Message{
+		text: fmt.Sprintf("%s has joined the chat room.\n", client.nickname),
 	}
 
 	// I/O
 	go client.WriteLinesFrom(client.ch)
-	client.ReadLinesInto(msgchan)
+	client.ReadLinesInto(room.msgchan)
 }
 
-func handleMessages(msgchan <-chan Message, addchan <-chan Client, rmchan <-chan Client) {
-	clients := make(map[net.Conn]chan<- Message)
-
+func handleMessages(r *Room) {
 	for {
 		select {
-		case msg := <-msgchan:
-			log.Printf("New message: %s: %s", msg.client.nickname, msg.text)
-			for _, ch := range clients {
-				go func(mch chan<- Message) { mch <- msg }(ch)
+		case msg := <-r.msgchan:
+			log.Printf("New message: %s: %s", msg.from.nickname, msg.text)
+			for _, client := range r.clients {
+				client.ch <- msg
 			}
-		case client := <-addchan:
+		case client := <-r.addchan:
 			log.Printf("New client: %v\n", client.conn)
-			clients[client.conn] = client.ch
-		case client := <-rmchan:
+			r.clients[client.conn] = client
+		case client := <-r.rmchan:
 			log.Printf("Client disconnects: %v\n", client.conn)
-			delete(clients, client.conn)
+			delete(r.clients, client.conn)
 		default:
 		}
 	}

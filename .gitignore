@@ -26,3 +26,5 @@ _testmain.go
 # Vim
 *.swo
 *.swp
+
+secret-agent-goph3r
