@@ -58,7 +58,7 @@ func (c Client) ReadLinesInto(ch chan<- Message) {
 		}
 		message := Message{
 			from: c,
-			text: fmt.Sprintf("%s: %s", c.nickname, line),
+			text: line,
 		}
 		ch <- message
 	}
@@ -82,7 +82,7 @@ func promptNick(c net.Conn, bufc *bufio.Reader) string {
 }
 
 func promptRoom(c net.Conn, bufc *bufio.Reader) string {
-	io.WriteString(c, "Enter a room: ")
+	io.WriteString(c, "Log in to your team's assigned collaboration channel")
 	room, _, _ := bufc.ReadLine()
 	return string(room)
 }
@@ -99,6 +99,10 @@ func handleConnection(c net.Conn, rooms map[string]*Room) {
 		io.WriteString(c, "Invalid Username\n")
 		return
 	}
+	welcomeMsg := `A monolithic building appears before you. You have arrived
+				   at the office. Try not to act suspicious.`
+	io.WriteString(c, welcomeMsg)
+
 	roomName := promptRoom(c, bufc)
 	room, ok := rooms[roomName]
 	if !ok {
@@ -111,33 +115,44 @@ func handleConnection(c net.Conn, rooms map[string]*Room) {
 			msgchan: make(chan Message),
 		}
 		rooms[roomName] = room
-		go handleMessages(rooms[roomName])
+		go handleIO(rooms[roomName])
 	}
 
-	// Register user
-	room.addchan <- &client
-	defer func() {
+	if len(room.clients) < 3 {
+		// Register user
+		room.addchan <- &client
+		defer func() {
+			room.msgchan <- Message{
+				text: fmt.Sprintf("%s has left %s.\n", client.nickname, room.name),
+			}
+			log.Printf("Connection from %v closed.\n", c.RemoteAddr())
+			room.rmchan <- client
+		}()
 		room.msgchan <- Message{
-			text: fmt.Sprintf("User %s left the chat room.\n", client.nickname),
+			text: fmt.Sprintf("--> | %s has joined %s, waiting for teammates...\n", client.nickname, room.name),
 		}
-		log.Printf("Connection from %v closed.\n", c.RemoteAddr())
-		room.rmchan <- client
-	}()
-	io.WriteString(c, fmt.Sprintf("Hi %s! Welcome to room %s!\n\n", client.nickname, roomName))
-	room.msgchan <- Message{
-		text: fmt.Sprintf("%s has joined the chat room.\n", client.nickname),
-	}
 
-	// I/O
-	go client.WriteLinesFrom(client.ch)
-	client.ReadLinesInto(room.msgchan)
+	} else {
+		fullMsg := `I'm sorry, it seems your teammates have started without
+		            you. Please try again`
+		io.WriteString(c, fullMsg)
+	}
+	// if everyone is present, start accepting I/O
+	if len(room.clients) == 3 {
+		startMsg := `*-- | Everyone has arrived, mission starting...
+		             Ask for /help to get familiar around here`
+		io.WriteString(c, startMsg)
+		go client.WriteLinesFrom(client.ch)
+		client.ReadLinesInto(room.msgchan)
+	}
 }
 
-func handleMessages(r *Room) {
+func handleIO(r *Room) {
+	// handle all io from clients
 	for {
 		select {
 		case msg := <-r.msgchan:
-			log.Printf("New message: %s: %s", msg.from.nickname, msg.text)
+			log.Printf("%s: %s", msg.from.nickname, msg.text)
 			for _, client := range r.clients {
 				client.ch <- msg
 			}
@@ -150,4 +165,18 @@ func handleMessages(r *Room) {
 		default:
 		}
 	}
+}
+
+func printHelp(ch chan<- Message) {
+	msg := `help -- |  Usage:
+            help -- |
+            help -- |     /[cmd] [arguments]
+            help -- |
+            help -- |  Available commands:
+            help -- |
+            help -- |    /msg [to] [text]         send message to coworker
+            help -- |    /list                    look at files you have access to
+            help -- |    /send [to] [filename]    move file to coworker
+            help -- |    /look                    show coworkers`
+	ch <- Message{text: msg}
 }
