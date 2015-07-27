@@ -5,13 +5,9 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"regexp"
 	"strings"
 )
-
-type Glenda struct {
-	Name     string
-	Filechan chan File
-}
 
 type Message struct {
 	From *Client
@@ -31,6 +27,8 @@ type Game struct {
 	Rmchan    chan Client
 	Msgchan   chan Message
 	isStarted bool
+	Filechan  chan File
+	done      chan *client
 }
 
 func prompt(reader *bufio.Reader, writer *bufio.Writer, question string) string {
@@ -63,23 +61,25 @@ func NewGame(name string) *Game {
 
 func (g *Game) HandleIO() {
 	// handle all io From Clients
+	re := regexp.MustCompile(`(\/\w+)\s(.*)`)
 	for {
 		select {
 		case msg := <-g.Msgchan:
-			msgText := strings.TrimSpace(msg.Text)
-			splitText := strings.SplitN(msgText, " ", 2)
+			reResult := re.FindStringSubmatch(msg.Text)
+			command := reResult[1]
+			arguments := reResult[2]
 			if !g.isStarted {
 				continue
 			}
-			switch splitText[0] {
+			switch command {
 			case "/help":
 				help(msg.From.Ch)
 			case "/look":
 				look(msg.From.Ch, g.Clients)
 			case "/msg":
-				splitText = strings.SplitN(splitText[1], " ", 2)
-				to := splitText[0]
-				text := splitText[1] + "\n"
+				splitArgs = strings.SplitN(arguments, " ", 2)
+				to := splitArgs[0]
+				text := splitArgs[1]
 				if to == "Glenda" {
 					msgGlenda(msg.From.Ch)
 				} else if to == "all" {
@@ -94,12 +94,15 @@ func (g *Game) HandleIO() {
 			case "/list":
 				msg.From.ListFiles()
 			case "/send":
-				log.Println(splitText)
 				splitText = strings.SplitN(splitText[1], " ", 2)
 				to := splitText[0]
 				filename := splitText[1]
-				if c, ok := g.Clients[to]; ok {
+				if to == "Glenda" {
+					msg.From.SendFileTo(filename, g.Filechan)
+				} else if c, ok := g.Clients[to]; ok {
 					msg.From.SendFileTo(filename, c.Filechan)
+				} else {
+					msg.From.Ch <- Message{Text: fmt.Sprintf("There is no one here named %s.\n", to)}
 				}
 			default:
 			}
@@ -109,6 +112,12 @@ func (g *Game) HandleIO() {
 		case client := <-g.Rmchan:
 			log.Printf("Client disconnects: %v", client.Conn)
 			delete(g.Clients, client.Nickname)
+		case client := <-g.Donechan:
+			client.DoneSendingFiles = true
+			if g.CheckDone() {
+				g.End()
+				return
+			}
 		default:
 		}
 	}
@@ -122,8 +131,23 @@ func (g *Game) Start() {
 	g.Msgchan <- Message{Text: startMsg}
 }
 
+func (g *Game) End() {
+	for _, c := range g.Clients {
+		c.Ch <- Message{Text: text}
+	}
+}
+
 func (g *Game) IsFull() bool {
 	return len(g.Clients) >= 3
+}
+
+func (g *Game) CheckDone() bool {
+	for _, c := range g.Clients {
+		if !c.DoneSendingFiles {
+			return false
+		}
+	}
+	return true
 }
 
 func help(ch chan Message) {

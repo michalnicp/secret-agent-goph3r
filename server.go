@@ -43,6 +43,7 @@ func handleConnection(c net.Conn, games map[string]*Game) {
 		game = NewGame(gameName)
 		games[gameName] = game
 		go games[gameName].HandleIO()
+		go games[gameName].CheckDone()
 	}
 	if game.IsFull() {
 		writer.WriteString("It seems your teammates have started without you. Find better friends\n")

@@ -10,13 +10,14 @@ import (
 )
 
 type Client struct {
-	Conn      net.Conn
-	Nickname  string
-	Ch        chan Message
-	Files     []File
-	Filechan  chan File
-	Bandwidth int
-	Done      chan bool
+	Conn             net.Conn
+	Nickname         string
+	Ch               chan Message
+	Files            []File
+	Filechan         chan File
+	Bandwidth        int
+	DoneSendingFiles bool
+	Done             chan bool
 }
 
 func (c *Client) ReadLinesInto(ch chan<- Message) {
