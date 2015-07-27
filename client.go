@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"text/tabwriter"
 )
@@ -15,15 +16,17 @@ type Client struct {
 	Files     []File
 	Filechan  chan File
 	Bandwidth int
-	Done      bool
+	Done      chan bool
 }
 
-func (c Client) ReadLinesInto(ch chan<- Message) {
-	bufc := bufio.NewReader(c.Conn)
+func (c *Client) ReadLinesInto(ch chan<- Message) {
+	reader := bufio.NewReader(c.Conn)
 	for {
-		line, err := bufc.ReadString('\n')
+		line, err := reader.ReadString('\n')
 		if err != nil {
-			break
+			log.Printf("An error occured while reading: %s\n", err.Error())
+			c.Done <- true
+			return
 		}
 		message := Message{
 			From: c,
@@ -34,15 +37,22 @@ func (c Client) ReadLinesInto(ch chan<- Message) {
 }
 
 func (c Client) WriteLinesFrom(ch <-chan Message) {
+	writer := bufio.NewWriter(c.Conn)
 	for msg := range ch {
-		_, err := io.WriteString(c.Conn, msg.Text)
-		if err != nil {
+		if _, err := writer.WriteString(msg.Text); err != nil {
+			log.Printf("An error occured writing: %s\n", err.Error())
+			c.Done <- true
+			return
+		}
+		if err := writer.Flush(); err != nil {
+			log.Printf("An error occured flushing: %s\n", err.Error())
+			c.Done <- true
 			return
 		}
 	}
 }
 
-func (c Client) ListFiles() {
+func (c *Client) ListFiles() {
 	io.WriteString(c.Conn, fmt.Sprintf("list -- | Remaining Bandwidth: %d KB\n", c.Bandwidth))
 	w := new(tabwriter.Writer)
 	w.Init(c.Conn, 0, 4, 2, ' ', 0)
@@ -51,4 +61,42 @@ func (c Client) ListFiles() {
 		fmt.Fprintf(w, "list -- |\t%s\t%d\t%d\n", file.Filename, file.Size, file.Secrecy)
 	}
 	w.Flush()
+}
+
+func (c *Client) ReceiveFilesFrom(ch <-chan File) {
+	for file := range ch {
+		log.Printf("got a file %v", file)
+		c.Files = append(c.Files, file)
+	}
+}
+
+func (c *Client) SendFileTo(filename string, ch chan<- File) {
+	newfiles := make([]File, 0)
+	for _, file := range c.Files {
+		if file.Filename == filename {
+			ch <- file
+		} else {
+			newfiles = append(newfiles, file)
+		}
+	}
+	c.Files = newfiles
+}
+
+func NewClient(name string, c net.Conn) *Client {
+	return &Client{
+		Conn:      c,
+		Nickname:  name,
+		Ch:        make(chan Message),
+		Files:     make([]File, 0),
+		Filechan:  make(chan File),
+		Bandwidth: 0,
+		Done:      make(chan bool, 1),
+	}
+}
+
+func (c Client) Welcome() {
+	writer := bufio.NewWriter(c.Conn)
+	welcomeMsg := `A monolithic building appears before you. You have arrived
+at the office. Try not to act suspicious.`
+	writer.WriteString(string(welcomeMsg))
 }
