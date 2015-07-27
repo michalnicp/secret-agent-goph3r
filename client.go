@@ -66,20 +66,26 @@ func (c *Client) ListFiles() {
 
 func (c *Client) ReceiveFilesFrom(ch <-chan File) {
 	for file := range ch {
-		log.Printf("got a file %v", file)
+		io.WriteString(c.Conn, fmt.Sprintf("send -- | Received file: %s\n", file.Filename))
 		c.Files = append(c.Files, file)
 	}
 }
 
-func (c *Client) SendFileTo(filename string, ch chan<- File) {
+func (c *Client) SendFileTo(filename string, ch chan File, external bool) {
 	newfiles := make([]File, 0)
 	for _, file := range c.Files {
 		if file.Filename == filename {
+			if external {
+				c.Bandwidth -= file.Size
+			}
+			log.Printf("before blocking")
 			ch <- file
+			log.Printf("after blocking")
 		} else {
 			newfiles = append(newfiles, file)
 		}
 	}
+	// TODO Figure out a better way to cut out an element from an array
 	c.Files = newfiles
 }
 

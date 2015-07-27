@@ -36,14 +36,15 @@ func handleConnection(c net.Conn, games map[string]*Game) {
 	defer c.Close()
 
 	// Create Game
-	gameName := prompt(reader, writer, "Log in to your team's assigned collaboration channel: ")
+	gameName := prompt(reader, writer,
+		"A monolithic building appears before you. You have arrived at the office. Try not to act suspicious.\n"+
+			"Log in to your team's assigned collaboration channel: ")
 	game, ok := games[gameName]
 	if !ok {
 		// Create a new game with name
 		game = NewGame(gameName)
 		games[gameName] = game
 		go games[gameName].HandleIO()
-		go games[gameName].CheckDone()
 	}
 	if game.IsFull() {
 		writer.WriteString("It seems your teammates have started without you. Find better friends\n")
