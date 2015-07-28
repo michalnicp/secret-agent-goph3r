@@ -25,8 +25,8 @@ type Game struct {
 	Addchan   chan *Client
 	Rmchan    chan Client
 	Msgchan   chan Message
-	isStarted bool
 	Filechan  chan File
+	isStarted bool
 	Files     []File
 	Done      chan bool
 }
@@ -106,10 +106,7 @@ func (g *Game) HandleIO() {
 func (g *Game) Start() {
 	g.loadFilesIntoClients()
 	g.isStarted = true
-	startMsg := `/msg all * -- | Everyone has arrived, mission starting...
-* -- | Ask for /help to get familiar around here
-`
-	g.Msgchan <- Message{Text: string(startMsg)}
+	g.Msgchan <- Message{Text: START_MSG}
 }
 
 func (g *Game) End() {
@@ -196,29 +193,13 @@ func (g *Game) SendFile(msg Message) {
 
 func (g *Game) Fail() {
 	for _, c := range g.Clients {
-		failText := `fail | You wake up bleary eyed and alone in a concrete box. Your head has a
-fail | lump on the side. It seems corporate security noticed you didn't belong,
-fail | you should have acted faster. You wonder if you will ever see your
-fail | burrow again
-`
-		c.Ch <- Message{Text: string(failText)}
+		c.Ch <- Message{Text: FAIL_MSG}
 		c.Done <- true
 	}
 }
 
 func (g *Game) help(msg Message) {
-	helpText := `help -- |  Usage:
-help -- |
-help -- |     /[cmd] [arguments]
-help -- |
-help -- |  Available commands:
-help -- |
-help -- |    /msg [to] [text]         send message to coworker
-help -- |    /list                    look at files you have access to
-help -- |    /send [to] [filename]    move file to coworker
-help -- |    /look                    show coworkers
-`
-	msg.From.Ch <- Message{Text: string(helpText)}
+	msg.From.Ch <- Message{Text: HELP_MSG}
 }
 
 func (g *Game) look(msg Message) {
@@ -231,24 +212,7 @@ func (g *Game) look(msg Message) {
 }
 
 func msgGlenda(ch chan Message) {
-	glendaText := `Glenda | Psst, hey there. I'm going to need your help if we want to exfiltrate
-Glenda | these documents. You have clearance that I don't.
-Glenda |
-Glenda | You each have access to a different set of sensitive files. Within your
-Glenda | group you can freely send files to each other for further analysis.
-Glenda | However, when sending files to me, the corporate infrastructure team
-Glenda | will be alerted if you exceed your transfer quota. Working on too many
-Glenda | files will make them suspicious.
-Glenda |
-Glenda | Please optimize your transfers by the political impact it will create
-Glenda | without exceeding any individual transfer quota. The file's security
-Glenda | clearance is a good metric to go by for that. Thanks!
-Glenda |
-Glenda | When each of you is finished sending me files, send me the message
-Glenda | 'done'. I'll wait to hear this from all of you before we execute phase
-Glenda | two.
-`
-	ch <- Message{Text: string(glendaText)}
+	ch <- Message{Text: GLENDA_MSG}
 }
 
 func (g *Game) loadFilesIntoClients() {

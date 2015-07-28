@@ -35,7 +35,7 @@ func handleConnection(c net.Conn, games map[string]*Game) {
 	writer := bufio.NewWriter(c)
 	defer c.Close()
 
-	fmt.Fprintln(writer, "A monolithic building appears before you. You have arrived at the office. Try \nnot to act suspicious.\n")
+	writer.WriteString(INTRO_MSG)
 
 	// Create Game
 	gameName := prompt(reader, writer, "Log in to your team's assigned collaboration channel: ")
