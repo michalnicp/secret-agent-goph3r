@@ -114,7 +114,16 @@ func (g *Game) Start() {
 
 func (g *Game) End() {
 	g.MsgAll("Game has ended\n")
-	g.Done <- true
+	for _, c := range g.Clients {
+		select {
+		case c.Done <- true:
+		default:
+		}
+	}
+	select {
+	case g.Done <- true:
+	default: //Error handling here
+	}
 }
 
 func (g *Game) IsFull() bool {
