@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strings"
 	"text/tabwriter"
 )
 
@@ -16,8 +17,46 @@ type Client struct {
 	Files            []File
 	Filechan         chan File
 	Bandwidth        int
-	DoneSendingFiles bool
+	DoneSendingFiles chan bool
 	Done             chan bool
+}
+
+func NewClient(c net.Conn) *Client {
+	client := Client{
+		Conn:     c,
+		Ch:       make(chan Message),
+		Files:    make([]File, 0),
+		Filechan: make(chan File),
+		Done:     make(chan bool, 1),
+	}
+
+	client.Write(INTRO_MSG)
+
+	// get nickname
+	var nickname string
+	var err error
+	for {
+		client.Write("Enter a nickname: ")
+		if nickname, err = client.Read(); err != nil {
+			return nil
+		}
+		nickname = strings.TrimSpace(nickname)
+		if nickname == "" {
+			client.Write("Invalid Username\n")
+			continue
+		}
+		// TODO games to see if name is taken, or autogenerate nickname
+		client.Write("Nickname taken\n")
+	}
+	client.Nickname = nickname
+
+	return &client
+}
+
+func (client *Client) Start(msgChan chan Message) {
+	go client.WriteLinesFrom(client.Ch)
+	go client.ReadLinesInto(msgChan)
+	go client.ReceiveFilesFrom(client.Filechan)
 }
 
 func (c *Client) ReadLinesInto(ch chan<- Message) {
@@ -65,8 +104,17 @@ func (c *Client) ListFiles() {
 }
 
 func (c *Client) ReceiveFilesFrom(ch <-chan File) {
+	writer := bufio.NewWriter(c.Conn)
+
 	for file := range ch {
-		io.WriteString(c.Conn, fmt.Sprintf("send -- | Received file: %s\n", file.Filename))
+		if _, err := writer.WriteString(fmt.Sprintf("send -- | Received file: %s\n", file.Filename)); err != nil {
+			log.Printf("An error occured writing: %s\n", err.Error())
+		}
+
+		if err := writer.Flush(); err != nil {
+			log.Printf("An error occured flushing: %s\n", err.Error())
+		}
+
 		c.Files = append(c.Files, file)
 	}
 }
@@ -87,21 +135,39 @@ func (c *Client) SendFileTo(filename string, ch chan<- File, external bool) {
 	c.Files = newfiles
 }
 
-func NewClient(name string, c net.Conn) *Client {
-	return &Client{
-		Conn:      c,
-		Nickname:  name,
-		Ch:        make(chan Message),
-		Files:     make([]File, 0),
-		Filechan:  make(chan File),
-		Bandwidth: 0,
-		Done:      make(chan bool, 1),
+func (c *Client) Write(s string) error {
+	writer := bufio.NewWriter(c.Conn)
+
+	if _, err := writer.WriteString(s); err != nil {
+		log.Printf("An error occured writing: %s\n", err.Error())
+		return err
 	}
+
+	if err := writer.Flush(); err != nil {
+		log.Printf("An error occured flushing: %s\n", err.Error())
+		return err
+	}
+
+	return nil
 }
 
-func (c Client) Welcome() {
-	writer := bufio.NewWriter(c.Conn)
-	welcomeMsg := `A monolithic building appears before you. You have arrived
-at the office. Try not to act suspicious.`
-	writer.WriteString(string(welcomeMsg))
+func (c *Client) Read() (string, error) {
+	reader := bufio.NewReader(c.Conn)
+	b, _, err := reader.ReadLine()
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func (c *Client) Prompt(question string) (string, error) {
+	var ans string
+	var err error
+	if err = c.Write(question); err != nil {
+		return "", err
+	}
+	if ans, err = c.Read(); err != nil {
+		return "", err
+	}
+	return ans, nil
 }

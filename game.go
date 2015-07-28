@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"log"
 	"math/rand"
@@ -31,22 +30,46 @@ type Game struct {
 	Done      chan bool
 }
 
-func prompt(reader *bufio.Reader, writer *bufio.Writer, question string) string {
-	if _, err := writer.WriteString(question); err != nil {
-		log.Printf("An error occured writing: %s\n", err.Error())
-	}
+func GameHandler(clientCh chan *Client) {
+	games := make(map[string]*Game)
 
-	if err := writer.Flush(); err != nil {
-		log.Printf("An error occured flushing: %s\n", err.Error())
+	for {
+		select {
+		case client := <-clientCh:
+			// Join a game
+			gameName, err := client.Prompt("Log in to your team's assigned collaboration channel: ")
+			if err != nil {
+				continue
+			}
+			game, ok := games[gameName]
+			if !ok {
+				// Create a new game with name
+				game = NewGame(gameName)
+				games[gameName] = game
+				go games[gameName].HandleIO()
+			}
+			// maximum 3 clients per game
+			if len(game.Clients) < 3 {
+				game.Addchan <- client
+				game.Msgchan <- Message{
+					Text: fmt.Sprintf("--> | %s has joined %s, waiting for teammates...\n", client.Nickname, game.Name),
+				}
+			} else {
+				// kick the client
+				_ = client.Write("It seems your teammates have started without you...\n")
+				client.Done <- true
+			}
+		}
 	}
-
-	ans, _, err := reader.ReadLine()
-	if err != nil {
-		log.Printf("An error occured reading: %s\n", err.Error())
-	}
-
-	return string(ans)
 }
+
+//defer func() {
+//	game.Msgchan <- Message{
+//		Text: fmt.Sprintf("/msg all --> | %s has left %s\n", client.Nickname, game.Name),
+//	}
+//	log.Printf("Connection from %v closed", client.Conn.RemoteAddr())
+//	game.Rmchan <- *client
+//}()
 
 func NewGame(name string) *Game {
 	return &Game{
@@ -123,13 +146,9 @@ func (g *Game) End() {
 	}
 }
 
-func (g *Game) IsFull() bool {
-	return len(g.Clients) >= 3
-}
-
 func (g *Game) CheckDone() bool {
 	for _, c := range g.Clients {
-		if !c.DoneSendingFiles {
+		if !<-c.DoneSendingFiles {
 			return false
 		}
 	}
@@ -153,7 +172,7 @@ func (g *Game) SendMsg(msg Message) {
 	text := reResult[2]
 	if to == "Glenda" {
 		if text == "done\n" {
-			msg.From.DoneSendingFiles = true
+			msg.From.DoneSendingFiles <- true
 			doneText := fmt.Sprintf("-- | %s has finished sending files. Waiting for teammates to finish...\n", msg.From.Nickname)
 			g.MsgAll(doneText)
 		} else {

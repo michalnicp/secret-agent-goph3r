@@ -1,12 +1,10 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"log"
 	"net"
 	"os"
-	"strings"
 )
 
 func main() {
@@ -17,81 +15,26 @@ func main() {
 	}
 	log.Println("Now accepting connections on port 6000")
 
-	games := make(map[string]*Game)
+	// game channel that handles requests for new games
+	clientChan := make(chan *Client, 5)
+	go GameHandler(clientChan)
 
 	for {
-		Conn, err := ln.Accept()
+		conn, err := ln.Accept()
 		if err != nil {
-			fmt.Println(err)
+			log.Printf("Error occurred accepting connection: %s", err.Error())
 			continue
 		}
 
-		go handleConnection(Conn, games)
+		go ConnectionHandler(conn, clientChan)
 	}
 }
 
-func handleConnection(c net.Conn, games map[string]*Game) {
-	reader := bufio.NewReader(c)
-	writer := bufio.NewWriter(c)
+func ConnectionHandler(c net.Conn, ch chan *Client) {
 	defer c.Close()
 
-	writer.WriteString(INTRO_MSG)
+	client := NewClient(c)
+	ch <- client
 
-	// Create Game
-	gameName := prompt(reader, writer, "Log in to your team's assigned collaboration channel: ")
-	game, ok := games[gameName]
-	if !ok {
-		// Create a new game with name
-		game = NewGame(gameName)
-		games[gameName] = game
-		go games[gameName].HandleIO()
-	}
-	if game.IsFull() {
-		fmt.Println(writer, "It seems your teammates have started without you...\n")
-		return
-	}
-
-	fmt.Printf("Joined Game(%p)\n", game)
-
-	// Create Client
-	var nickname string
-	for {
-		nickname = strings.TrimSpace(prompt(reader, writer, "Enter a nickname: "))
-		if nickname == "" {
-			writer.WriteString("Invalid Username\n")
-			continue
-		}
-		_, ok := game.Clients[nickname]
-		if !ok {
-			// client with nickname doesn't exist, valid
-			break
-		}
-		writer.WriteString("Nickname taken\n")
-	}
-	client := NewClient(nickname, c)
-	client.Welcome()
-
-	game.Addchan <- client
-	go client.WriteLinesFrom(client.Ch)
-	go client.ReadLinesInto(game.Msgchan)
-	go client.ReceiveFilesFrom(client.Filechan)
-	for _, c := range game.Clients {
-		c.Ch <- Message{
-			Text: fmt.Sprintf("--> | %s has joined %s, waiting for teammates...\n", client.Nickname, game.Name),
-		}
-	}
-
-	defer func() {
-		game.Msgchan <- Message{
-			Text: fmt.Sprintf("/msg all --> | %s has left %s\n", client.Nickname, game.Name),
-		}
-		log.Printf("Connection from %v closed", client.Conn.RemoteAddr())
-		game.Rmchan <- *client
-	}()
-
-	if game.IsFull() {
-		game.Start()
-	}
-	// Wait for done
 	<-client.Done
 }
