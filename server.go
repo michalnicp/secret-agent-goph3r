@@ -35,10 +35,10 @@ func handleConnection(c net.Conn, games map[string]*Game) {
 	writer := bufio.NewWriter(c)
 	defer c.Close()
 
+	fmt.Fprintln(writer, "A monolithic building appears before you. You have arrived at the office. Try \nnot to act suspicious.\n")
+
 	// Create Game
-	gameName := prompt(reader, writer,
-		"A monolithic building appears before you. You have arrived at the office. Try not to act suspicious.\n"+
-			"Log in to your team's assigned collaboration channel: ")
+	gameName := prompt(reader, writer, "Log in to your team's assigned collaboration channel: ")
 	game, ok := games[gameName]
 	if !ok {
 		// Create a new game with name
@@ -47,7 +47,7 @@ func handleConnection(c net.Conn, games map[string]*Game) {
 		go games[gameName].HandleIO()
 	}
 	if game.IsFull() {
-		writer.WriteString("It seems your teammates have started without you. Find better friends\n")
+		fmt.Println(writer, "It seems your teammates have started without you...\n")
 		return
 	}
 
@@ -83,7 +83,7 @@ func handleConnection(c net.Conn, games map[string]*Game) {
 
 	defer func() {
 		game.Msgchan <- Message{
-			Text: fmt.Sprintf("/msg all --> | %s has left %s.\n", client.Nickname, game.Name),
+			Text: fmt.Sprintf("/msg all --> | %s has left %s\n", client.Nickname, game.Name),
 		}
 		log.Printf("Connection from %v closed", client.Conn.RemoteAddr())
 		game.Rmchan <- *client

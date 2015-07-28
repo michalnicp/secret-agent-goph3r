@@ -28,6 +28,7 @@ type Game struct {
 	isStarted bool
 	Filechan  chan File
 	Files     []File
+	Done      chan bool
 }
 
 func prompt(reader *bufio.Reader, writer *bufio.Writer, question string) string {
@@ -54,6 +55,7 @@ func NewGame(name string) *Game {
 		Addchan:   make(chan *Client),
 		Rmchan:    make(chan Client),
 		Msgchan:   make(chan Message),
+		Filechan:  make(chan File, 5), // TODO do I really need a buffered chan
 		isStarted: false,
 	}
 }
@@ -76,6 +78,9 @@ func (g *Game) HandleIO() {
 				g.look(msg)
 			case "/msg":
 				g.SendMsg(msg)
+				if g.CheckDone() {
+					g.End()
+				}
 			case "/list":
 				msg.From.ListFiles()
 			case "/send":
@@ -91,6 +96,8 @@ func (g *Game) HandleIO() {
 		case file := <-g.Filechan:
 			log.Printf("recieved file from filechan")
 			g.Files = append(g.Files, file)
+		case <-g.Done:
+			return
 		default:
 		}
 	}
@@ -103,6 +110,11 @@ func (g *Game) Start() {
 * -- | Ask for /help to get familiar around here
 `
 	g.Msgchan <- Message{Text: string(startMsg)}
+}
+
+func (g *Game) End() {
+	g.MsgAll("Game has ended\n")
+	g.Done <- true
 }
 
 func (g *Game) IsFull() bool {
@@ -138,10 +150,6 @@ func (g *Game) SendMsg(msg Message) {
 			msg.From.DoneSendingFiles = true
 			doneText := fmt.Sprintf("-- | %s has finished sending files. Waiting for teammates to finish...\n", msg.From.Nickname)
 			g.MsgAll(doneText)
-			if g.CheckDone() {
-				// TODO implement done
-				return
-			}
 		} else {
 			msgGlenda(msg.From.Ch)
 		}
@@ -164,16 +172,16 @@ func (g *Game) SendFile(msg Message) {
 	to := reResult[1]
 	filename := reResult[2]
 	if to == "Glenda" {
-		log.Println("sending a file to glenda")
 		msg.From.SendFileTo(filename, g.Filechan, true)
-		log.Println("sent file")
+		msg.From.Ch <- Message{Text: fmt.Sprintf("send -- | Sent File: %s to Glenda\n", filename)}
 		if msg.From.Bandwidth < 0 {
 			g.Fail()
 		}
 	} else if c, ok := g.Clients[to]; ok {
 		msg.From.SendFileTo(filename, c.Filechan, false)
+		msg.From.Ch <- Message{Text: fmt.Sprintf("send -- | Sent File: %s to %s\n", filename, c.Nickname)}
 	} else {
-		msg.From.Ch <- Message{Text: fmt.Sprintf("There is no one here named %s.\n", to)}
+		msg.From.Ch <- Message{Text: fmt.Sprintf("send -- | There is no one here named %s\n", to)}
 	}
 }
 
@@ -182,7 +190,8 @@ func (g *Game) Fail() {
 		failText := `fail | You wake up bleary eyed and alone in a concrete box. Your head has a
 fail | lump on the side. It seems corporate security noticed you didn't belong,
 fail | you should have acted faster. You wonder if you will ever see your
-fail | burrow again`
+fail | burrow again
+`
 		c.Ch <- Message{Text: string(failText)}
 		c.Done <- true
 	}

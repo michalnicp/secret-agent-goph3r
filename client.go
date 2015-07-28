@@ -71,16 +71,14 @@ func (c *Client) ReceiveFilesFrom(ch <-chan File) {
 	}
 }
 
-func (c *Client) SendFileTo(filename string, ch chan File, external bool) {
+func (c *Client) SendFileTo(filename string, ch chan<- File, external bool) {
 	newfiles := make([]File, 0)
 	for _, file := range c.Files {
 		if file.Filename == filename {
 			if external {
 				c.Bandwidth -= file.Size
 			}
-			log.Printf("before blocking")
 			ch <- file
-			log.Printf("after blocking")
 		} else {
 			newfiles = append(newfiles, file)
 		}
