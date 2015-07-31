@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"log"
 )
@@ -80,6 +81,27 @@ func (g *Game) ClientHandler(done chan bool) {
 	for {
 		select {
 		case client := <-g.Addchan:
+			// Check if clients already exist with nickname
+			for {
+				if _, ok := g.Clients[client.Nickname]; ok {
+					// Nickname already exists, get new nickname
+					bufw := bufio.NewWriter(client.RWC)
+					if _, err := bufw.WriteString(fmt.Sprintf("err -- | Client with nickname \"%s\" already exists. Choose a new nickname.\n", client.Nickname)); err != nil {
+						log.Printf("Error occuring while writing: %s\n", err.Error())
+					}
+					if err := bufw.Flush(); err != nil {
+						log.Printf("Error occured while flushing: %s\n", err.Error())
+					}
+
+					nickname, err := GetNickname(client.RWC)
+					if err != nil {
+						log.Printf("Error while getting nickname: %s", err.Error())
+					}
+					client.Nickname = nickname
+				} else {
+					break
+				}
+			}
 			log.Printf("New client %s", client.Nickname)
 			g.Clients[client.Nickname] = client
 			client.Game = g

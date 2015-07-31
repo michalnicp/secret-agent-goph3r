@@ -47,33 +47,38 @@ func InitClient(rwc io.ReadWriteCloser, ch chan *Client) {
 	}
 
 	// Get nickname
-	var nickname string
-	var err error
+	nickname, err := GetNickname(rwc)
+	if err != nil {
+		log.Printf("Error while getting nickname: %s", err.Error())
+		return
+	}
+	client := NewClient(rwc, nickname)
+
+	ch <- client
+}
+
+func GetNickname(rw io.ReadWriter) (string, error) {
+	bufw := bufio.NewWriter(rw)
 	for {
-		nickname, err = Prompt(rwc, NICK_MSG)
+		nickname, err := Prompt(rw, NICK_MSG)
 		if err != nil {
-			log.Printf("Error occuring while prompting: %s", err.Error())
-			return
+			return "", err
 		}
 
 		nickname = strings.TrimSpace(nickname)
 		if nickname == "" {
 			if _, err := bufw.WriteString("Invalid Username\n"); err != nil {
 				log.Printf("Error occuring while writing: %s\n", err.Error())
+				return "", err
 			}
 			if err := bufw.Flush(); err != nil {
 				log.Printf("Error occured while flushing: %s\n", err.Error())
-				return
+				return "", err
 			}
 			continue
 		}
-		// TODO games to see if name is taken, or autogenerate nickname
-		//client.Write("Nickname taken\n")
-		break
+		return nickname, nil
 	}
-	client := NewClient(rwc, nickname)
-
-	ch <- client
 }
 
 func (c *Client) Start() {
