@@ -5,118 +5,185 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"strings"
 	"text/tabwriter"
 )
 
 type Client struct {
-	Conn             net.Conn
+	RWC              io.ReadWriteCloser
 	Nickname         string
 	Ch               chan Message
 	Files            []File
 	Filechan         chan File
 	Bandwidth        int
-	DoneSendingFiles chan bool
+	DoneSendingFiles bool
 	Done             chan bool
 }
 
-func NewClient(c net.Conn) *Client {
-	client := Client{
-		Conn:     c,
-		Ch:       make(chan Message),
-		Files:    make([]File, 0),
-		Filechan: make(chan File),
-		Done:     make(chan bool, 1),
+func InitClient(rwc io.ReadWriteCloser, ch chan *Client) {
+	bufw := bufio.NewWriter(rwc)
+
+	// Intro message
+	if _, err := bufw.WriteString(INTRO_MSG); err != nil {
+		log.Printf("Error occured while writing: %s", err.Error())
+	}
+	if err := bufw.Flush(); err != nil {
+		log.Printf("Error occured while flushing: %s\n", err.Error())
 	}
 
-	client.Write(INTRO_MSG)
-
-	// get nickname
+	// Get nickname
 	var nickname string
 	var err error
 	for {
-		client.Write("Enter a nickname: ")
-		if nickname, err = client.Read(); err != nil {
-			return nil
+		nickname, err = Prompt(rwc, NICK_MSG)
+		if err != nil {
+			log.Printf("Error occuring while prompting: %s", err.Error())
+			return
 		}
+
 		nickname = strings.TrimSpace(nickname)
 		if nickname == "" {
-			client.Write("Invalid Username\n")
+			if _, err := bufw.WriteString("Invalid Username\n"); err != nil {
+				log.Printf("Error occuring while writing: %s\n", err.Error())
+			}
+			if err := bufw.Flush(); err != nil {
+				log.Printf("Error occured while flushing: %s\n", err.Error())
+				return
+			}
 			continue
 		}
 		// TODO games to see if name is taken, or autogenerate nickname
-		client.Write("Nickname taken\n")
+		//client.Write("Nickname taken\n")
+		break
 	}
-	client.Nickname = nickname
+	client := NewClient(rwc, nickname)
 
-	return &client
+	ch <- client
 }
 
-func (client *Client) Start(msgChan chan Message) {
-	go client.WriteLinesFrom(client.Ch)
-	go client.ReadLinesInto(msgChan)
-	go client.ReceiveFilesFrom(client.Filechan)
+func NewClient(rwc io.ReadWriteCloser, nickname string) *Client {
+	return &Client{
+		RWC:              rwc,
+		Nickname:         nickname,
+		Ch:               make(chan Message),
+		Files:            make([]File, 0),
+		Filechan:         make(chan File),
+		Bandwidth:        100,
+		DoneSendingFiles: false,
+		Done:             make(chan bool),
+	}
 }
 
-func (c *Client) ReadLinesInto(ch chan<- Message) {
-	reader := bufio.NewReader(c.Conn)
+func (c *Client) Start(msgChan chan Message) {
+	done := make(chan bool)
+
+	go c.WriteLinesFrom(done, c.Ch)
+	go c.ReadLinesInto(done, msgChan)
+	go c.ReceiveFilesFrom(done, c.Filechan)
+
+	<-c.Done
+
+	done <- true
+	done <- true
+	done <- true
+}
+
+func (c *Client) Close() {
+	c.Done <- true
+}
+
+func (c *Client) ReadLinesInto(done chan bool, ch chan<- Message) {
+	bufr := bufio.NewReader(c.RWC)
 	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			log.Printf("An error occured while reading: %s\n", err.Error())
-			c.Done <- true
+		select {
+		case <-done:
 			return
+		default:
+			line, err := bufr.ReadString('\n')
+			if err == io.EOF {
+				continue
+			}
+			if err != nil {
+				log.Printf("An error occured while reading: %s\n", err.Error())
+				return
+			}
+
+			message := Message{
+				From: c,
+				Text: line,
+			}
+			ch <- message
 		}
-		message := Message{
-			From: c,
-			Text: line,
-		}
-		ch <- message
 	}
 }
 
-func (c Client) WriteLinesFrom(ch <-chan Message) {
-	writer := bufio.NewWriter(c.Conn)
-	for msg := range ch {
-		if _, err := writer.WriteString(msg.Text); err != nil {
-			log.Printf("An error occured writing: %s\n", err.Error())
-			c.Done <- true
+func (c *Client) WriteLinesFrom(done chan bool, ch <-chan Message) {
+	bufw := bufio.NewWriter(c.RWC)
+	for {
+		select {
+		case msg := <-ch:
+			if _, err := bufw.WriteString(msg.Text); err != nil {
+				log.Printf("An error occured writing: %s\n", err.Error())
+				c.Close()
+				return
+			}
+			if err := bufw.Flush(); err != nil {
+				log.Printf("An error occured flushing: %s\n", err.Error())
+				c.Close()
+				return
+			}
+		case <-done:
 			return
 		}
-		if err := writer.Flush(); err != nil {
-			log.Printf("An error occured flushing: %s\n", err.Error())
-			c.Done <- true
+	}
+}
+
+func (c *Client) HasFile(filename string) bool {
+	for _, f := range c.Files {
+		if f.Filename == filename {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) ReceiveFilesFrom(done chan bool, ch <-chan File) {
+	bufw := bufio.NewWriter(c.RWC)
+	for {
+		select {
+		case file := <-ch:
+			if _, err := bufw.WriteString(fmt.Sprintf("send -- | Received file: %s\n", file.Filename)); err != nil {
+				log.Printf("An error occured writing: %s\n", err.Error())
+			}
+
+			if err := bufw.Flush(); err != nil {
+				log.Printf("An error occured flushing: %s\n", err.Error())
+			}
+
+			c.Files = append(c.Files, file)
+		case <-done:
 			return
 		}
 	}
 }
 
 func (c *Client) ListFiles() {
-	io.WriteString(c.Conn, fmt.Sprintf("list -- | Remaining Bandwidth: %d KB\n", c.Bandwidth))
+	bufw := bufio.NewWriter(c.RWC)
+	_, err := bufw.WriteString(fmt.Sprintf("list -- | Remaining Bandwidth: %d KB\n", c.Bandwidth))
+	if err != nil {
+		log.Printf("Error occured while writing: %s", err.Error())
+	}
+	if err := bufw.Flush(); err != nil {
+		log.Printf("An error occured flushing: %s\n", err.Error())
+	}
+
 	w := new(tabwriter.Writer)
-	w.Init(c.Conn, 0, 4, 2, ' ', 0)
+	w.Init(c.RWC, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "list -- |\tName\tSize\tSecrecy Value")
 	for _, file := range c.Files {
 		fmt.Fprintf(w, "list -- |\t%s\t%d\t%d\n", file.Filename, file.Size, file.Secrecy)
 	}
 	w.Flush()
-}
-
-func (c *Client) ReceiveFilesFrom(ch <-chan File) {
-	writer := bufio.NewWriter(c.Conn)
-
-	for file := range ch {
-		if _, err := writer.WriteString(fmt.Sprintf("send -- | Received file: %s\n", file.Filename)); err != nil {
-			log.Printf("An error occured writing: %s\n", err.Error())
-		}
-
-		if err := writer.Flush(); err != nil {
-			log.Printf("An error occured flushing: %s\n", err.Error())
-		}
-
-		c.Files = append(c.Files, file)
-	}
 }
 
 func (c *Client) SendFileTo(filename string, ch chan<- File, external bool) {
@@ -133,41 +200,4 @@ func (c *Client) SendFileTo(filename string, ch chan<- File, external bool) {
 	}
 	// TODO Figure out a better way to cut out an element from an array
 	c.Files = newfiles
-}
-
-func (c *Client) Write(s string) error {
-	writer := bufio.NewWriter(c.Conn)
-
-	if _, err := writer.WriteString(s); err != nil {
-		log.Printf("An error occured writing: %s\n", err.Error())
-		return err
-	}
-
-	if err := writer.Flush(); err != nil {
-		log.Printf("An error occured flushing: %s\n", err.Error())
-		return err
-	}
-
-	return nil
-}
-
-func (c *Client) Read() (string, error) {
-	reader := bufio.NewReader(c.Conn)
-	b, _, err := reader.ReadLine()
-	if err != nil {
-		return "", err
-	}
-	return string(b), nil
-}
-
-func (c *Client) Prompt(question string) (string, error) {
-	var ans string
-	var err error
-	if err = c.Write(question); err != nil {
-		return "", err
-	}
-	if ans, err = c.Read(); err != nil {
-		return "", err
-	}
-	return ans, nil
 }

@@ -1,7 +1,41 @@
 package main
 
+import (
+	"bufio"
+	"io"
+	"log"
+)
+
+func Prompt(rw io.ReadWriter, question string) (string, error) {
+	bufw := bufio.NewWriter(rw)
+	bufr := bufio.NewReader(rw)
+
+	if _, err := bufw.WriteString(question); err != nil {
+		log.Printf("An error occured writing: %s\n", err.Error())
+		return "", err
+	}
+
+	if err := bufw.Flush(); err != nil {
+		log.Printf("An error occured flushing: %s\n", err.Error())
+		return "", err
+	}
+
+	ans, err := bufr.ReadString('\n')
+	if err != nil {
+		log.Printf("An error occured reading: %s\n", err.Error())
+		return "", err
+	}
+
+	return ans, nil
+}
+
 const INTRO_MSG string = string(`A monolithic building appears before you. You have arrived at the office. Try
-not to act suspicious`)
+not to act suspicious.
+`)
+
+const NICK_MSG string = "Enter a nickname:\n"
+
+const ROOM_MSG string = "Log in to your team's assigned collaboration channel:\n"
 
 const START_MSG string = string(`/msg all * -- | Everyone has arrived, mission starting...
 * -- | Ask for /help to get familiar around here

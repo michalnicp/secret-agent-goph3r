@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"log"
 	"math/rand"
@@ -37,8 +38,9 @@ func GameHandler(clientCh chan *Client) {
 		select {
 		case client := <-clientCh:
 			// Join a game
-			gameName, err := client.Prompt("Log in to your team's assigned collaboration channel: ")
+			gameName, err := Prompt(client.RWC, ROOM_MSG)
 			if err != nil {
+				client.Done <- true
 				continue
 			}
 			game, ok := games[gameName]
@@ -56,8 +58,14 @@ func GameHandler(clientCh chan *Client) {
 				}
 			} else {
 				// kick the client
-				_ = client.Write("It seems your teammates have started without you...\n")
-				client.Done <- true
+				bufw := bufio.NewWriter(client.RWC)
+				if _, err := bufw.WriteString("It seems your teammates have started without you...\n"); err != nil {
+					log.Printf("Error while writing: %s", err.Error())
+				}
+				if err := bufw.Flush(); err != nil {
+					log.Printf("Error occured while flushing: %s\n", err.Error())
+				}
+				client.Close()
 			}
 		}
 	}
@@ -89,7 +97,11 @@ func (g *Game) HandleIO() {
 	for {
 		select {
 		case msg := <-g.Msgchan:
+			log.Printf("msgchan %s", msg.Text)
 			reResult := re.FindStringSubmatch(msg.Text)
+			if reResult == nil {
+				continue
+			}
 			command := reResult[1]
 			if !g.isStarted {
 				continue
@@ -114,7 +126,7 @@ func (g *Game) HandleIO() {
 			log.Printf("New client: %p", client)
 			g.Clients[client.Nickname] = client
 		case client := <-g.Rmchan:
-			log.Printf("Client disconnects: %v", client.Conn)
+			log.Printf("Client disconnects: %s", client.Nickname)
 			delete(g.Clients, client.Nickname)
 		case file := <-g.Filechan:
 			log.Printf("recieved file from filechan")
@@ -148,7 +160,7 @@ func (g *Game) End() {
 
 func (g *Game) CheckDone() bool {
 	for _, c := range g.Clients {
-		if !<-c.DoneSendingFiles {
+		if !c.DoneSendingFiles {
 			return false
 		}
 	}
@@ -172,7 +184,7 @@ func (g *Game) SendMsg(msg Message) {
 	text := reResult[2]
 	if to == "Glenda" {
 		if text == "done\n" {
-			msg.From.DoneSendingFiles <- true
+			msg.From.DoneSendingFiles = true
 			doneText := fmt.Sprintf("-- | %s has finished sending files. Waiting for teammates to finish...\n", msg.From.Nickname)
 			g.MsgAll(doneText)
 		} else {
