@@ -1,15 +1,13 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"log"
-	"math/rand"
-	"regexp"
 )
 
 type Message struct {
-	From *Client
+	From string
+	To   string
 	Text string
 }
 
@@ -24,10 +22,10 @@ type Game struct {
 	Clients   map[string]*Client
 	Addchan   chan *Client
 	Rmchan    chan Client
-	Msgchan   chan Message
 	Filechan  chan File
-	isStarted bool
 	Files     []File
+	isStarted bool
+	Failed    bool
 	Done      chan bool
 }
 
@@ -40,30 +38,26 @@ func GameHandler(clientCh chan *Client) {
 			// Join a game
 			gameName, err := Prompt(client.RWC, ROOM_MSG)
 			if err != nil {
+				log.Printf("Error occured while prompting: %s", err.Error())
 				client.Done <- true
 				continue
 			}
 			game, ok := games[gameName]
 			if !ok {
 				// Create a new game with name
+				log.Printf("Creating a new game %s", gameName)
 				game = NewGame(gameName)
 				games[gameName] = game
-				go games[gameName].HandleIO()
+				go game.Init()
 			}
 			// maximum 3 clients per game
 			if len(game.Clients) < 3 {
 				game.Addchan <- client
-				game.Msgchan <- Message{
-					Text: fmt.Sprintf("--> | %s has joined %s, waiting for teammates...\n", client.Nickname, game.Name),
-				}
 			} else {
 				// kick the client
-				bufw := bufio.NewWriter(client.RWC)
-				if _, err := bufw.WriteString("It seems your teammates have started without you...\n"); err != nil {
-					log.Printf("Error while writing: %s", err.Error())
-				}
-				if err := bufw.Flush(); err != nil {
-					log.Printf("Error occured while flushing: %s\n", err.Error())
+				client.Msgchan <- Message{
+					To:   client.Nickname,
+					Text: "It seems your teammates have started without you...\n",
 				}
 				client.Close()
 			}
@@ -71,91 +65,87 @@ func GameHandler(clientCh chan *Client) {
 	}
 }
 
-//defer func() {
-//	game.Msgchan <- Message{
-//		Text: fmt.Sprintf("/msg all --> | %s has left %s\n", client.Nickname, game.Name),
-//	}
-//	log.Printf("Connection from %v closed", client.Conn.RemoteAddr())
-//	game.Rmchan <- *client
-//}()
-
 func NewGame(name string) *Game {
 	return &Game{
 		Name:      name,
 		Clients:   make(map[string]*Client),
-		Addchan:   make(chan *Client),
+		Addchan:   make(chan *Client, 5), // TODO do I really need a buffer chan
 		Rmchan:    make(chan Client),
-		Msgchan:   make(chan Message),
 		Filechan:  make(chan File, 5), // TODO do I really need a buffered chan
 		isStarted: false,
 	}
 }
 
-func (g *Game) HandleIO() {
-	// handle all io From Clients
-	re := regexp.MustCompile(`(?s)(\/\w+)\s(.*)`)
+func (g *Game) ClientHandler(done chan bool) {
 	for {
 		select {
-		case msg := <-g.Msgchan:
-			log.Printf("msgchan %s", msg.Text)
-			reResult := re.FindStringSubmatch(msg.Text)
-			if reResult == nil {
-				continue
-			}
-			command := reResult[1]
-			if !g.isStarted {
-				continue
-			}
-			switch command {
-			case "/help":
-				g.help(msg)
-			case "/look":
-				g.look(msg)
-			case "/msg":
-				g.SendMsg(msg)
-				if g.CheckDone() {
-					g.End()
-				}
-			case "/list":
-				msg.From.ListFiles()
-			case "/send":
-				g.SendFile(msg)
-			default:
-			}
 		case client := <-g.Addchan:
-			log.Printf("New client: %p", client)
+			log.Printf("New client %s", client.Nickname)
 			g.Clients[client.Nickname] = client
+			client.Game = g
+			log.Printf("Client %s has joined %s", client.Nickname, g.Name)
+			log.Printf("Game %s now has %v", g.Name, g.Clients)
+
+			go client.Start()
+
+			g.MsgAll(fmt.Sprintf("--> | %s has joined %s, waiting for teammates...\n", client.Nickname, client.Game.Name))
+			if len(g.Clients) == 3 {
+				g.Start()
+			}
 		case client := <-g.Rmchan:
-			log.Printf("Client disconnects: %s", client.Nickname)
+			// TODO cancel game when someone leaves
+			log.Printf("Client left: %s", client.Nickname)
+			g.MsgAll(fmt.Sprintf("--> | %s has left %s, exiting game...\n", client.Nickname, client.Game.Name))
 			delete(g.Clients, client.Nickname)
-		case file := <-g.Filechan:
-			log.Printf("recieved file from filechan")
-			g.Files = append(g.Files, file)
-		case <-g.Done:
-			return
-		default:
+			g.End()
 		}
 	}
+}
+
+func (g *Game) FileHandler(done chan bool) {
+	for {
+		select {
+		case file := <-g.Filechan:
+			log.Printf("Game %s received file %s", g.Name, file.Filename)
+			g.Files = append(g.Files, file)
+		case <-done:
+			return
+		}
+	}
+}
+
+func (g *Game) Init() {
+	done := make(chan bool)
+	go g.FileHandler(done)
+	go g.ClientHandler(done)
+
+	<-g.Done
+	if g.Failed {
+		for _, c := range g.Clients {
+			c.Msgchan <- Message{Text: FAIL_MSG}
+			c.Done <- true
+		}
+	} else {
+		// TODO calculate score
+		score := 100
+		for _, c := range g.Clients {
+			c.Msgchan <- Message{Text: fmt.Sprintf("Game ended. Score %d", score)}
+			c.Done <- true
+		}
+	}
+	done <- true
+	done <- true
 }
 
 func (g *Game) Start() {
-	g.loadFilesIntoClients()
+	log.Printf("Starting game %s", g.Name)
+	g.LoadFilesIntoClients()
 	g.isStarted = true
-	g.Msgchan <- Message{Text: START_MSG}
+	g.MsgAll(START_MSG)
 }
 
 func (g *Game) End() {
-	g.MsgAll("Game has ended\n")
-	for _, c := range g.Clients {
-		select {
-		case c.Done <- true:
-		default:
-		}
-	}
-	select {
-	case g.Done <- true:
-	default: //Error handling here
-	}
+	g.Done <- true
 }
 
 func (g *Game) CheckDone() bool {
@@ -169,84 +159,11 @@ func (g *Game) CheckDone() bool {
 
 func (g *Game) MsgAll(text string) {
 	for _, c := range g.Clients {
-		c.Ch <- Message{Text: text}
+		c.Msgchan <- Message{Text: text}
 	}
 }
 
-func (g *Game) SendMsg(msg Message) {
-	re := regexp.MustCompile(`(?s)\/\w+\s(\w+)\s(.*)`)
-	reResult := re.FindStringSubmatch(msg.Text)
-	if reResult == nil {
-		msg.From.Ch <- Message{Text: "Invalid command. Check /help for usage.\n"}
-		return
-	}
-	to := reResult[1]
-	text := reResult[2]
-	if to == "Glenda" {
-		if text == "done\n" {
-			msg.From.DoneSendingFiles = true
-			doneText := fmt.Sprintf("-- | %s has finished sending files. Waiting for teammates to finish...\n", msg.From.Nickname)
-			g.MsgAll(doneText)
-		} else {
-			msgGlenda(msg.From.Ch)
-		}
-	} else if to == "all" {
-		g.MsgAll(text)
-	} else if c, ok := g.Clients[to]; ok {
-		c.Ch <- Message{From: msg.From, Text: fmt.Sprintf("%s | %s", msg.From.Nickname, text)}
-	} else {
-		msg.From.Ch <- Message{Text: fmt.Sprintf("There is no one here named %s.\n", to)}
-	}
-}
-
-func (g *Game) SendFile(msg Message) {
-	re := regexp.MustCompile(`\/\w+\s(\w+)\s(.*)`)
-	reResult := re.FindStringSubmatch(msg.Text)
-	if reResult == nil {
-		msg.From.Ch <- Message{Text: "Invalid command. Check /help for usage.\n"}
-		return
-	}
-	to := reResult[1]
-	filename := reResult[2]
-	if to == "Glenda" {
-		msg.From.SendFileTo(filename, g.Filechan, true)
-		msg.From.Ch <- Message{Text: fmt.Sprintf("send -- | Sent File: %s to Glenda\n", filename)}
-		if msg.From.Bandwidth < 0 {
-			g.Fail()
-		}
-	} else if c, ok := g.Clients[to]; ok {
-		msg.From.SendFileTo(filename, c.Filechan, false)
-		msg.From.Ch <- Message{Text: fmt.Sprintf("send -- | Sent File: %s to %s\n", filename, c.Nickname)}
-	} else {
-		msg.From.Ch <- Message{Text: fmt.Sprintf("send -- | There is no one here named %s\n", to)}
-	}
-}
-
-func (g *Game) Fail() {
-	for _, c := range g.Clients {
-		c.Ch <- Message{Text: FAIL_MSG}
-		c.Done <- true
-	}
-}
-
-func (g *Game) help(msg Message) {
-	msg.From.Ch <- Message{Text: HELP_MSG}
-}
-
-func (g *Game) look(msg Message) {
-	lookText := "look -- | You look around at your co-workers' nametages:\n"
-	for _, c := range g.Clients {
-		lookText += ("look -- | " + c.Nickname + "\n")
-	}
-	lookText += "look -- | Glenda\n"
-	msg.From.Ch <- Message{Text: lookText}
-}
-
-func msgGlenda(ch chan Message) {
-	ch <- Message{Text: GLENDA_MSG}
-}
-
-func (g *Game) loadFilesIntoClients() {
+func (g *Game) LoadFilesIntoClients() {
 	capacities := []int{50, 81, 120}
 	weights := []int{23, 31, 29, 44, 53, 38, 63, 85, 89, 82}
 	profits := []int{92, 57, 49, 68, 60, 43, 67, 84, 86, 72}
@@ -254,6 +171,7 @@ func (g *Game) loadFilesIntoClients() {
 	totalFiles := 0
 
 	for {
+		// iterating over maps is random, no need to use perm
 		for _, client := range g.Clients {
 			file := File{
 				Filename: fmt.Sprintf("filename_%d.txt", totalFiles),
@@ -280,14 +198,4 @@ func (g *Game) loadFilesIntoClients() {
 		client.Bandwidth = capacities[i]
 		i++
 	}
-}
-
-func ShuffleInt(list []int) []int {
-	shuffledList := make([]int, len(list))
-	perm := rand.Perm(len(list))
-
-	for i, v := range list {
-		shuffledList[perm[i]] = v
-	}
-	return shuffledList
 }

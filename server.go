@@ -49,13 +49,10 @@ func (s *Server) Start(connChan chan net.Conn) {
 }
 
 func ConnectionHandler(c <-chan net.Conn, ch chan *Client) {
-	newClientChan := make(chan *Client)
 	for {
 		select {
 		case conn := <-c:
-			go InitClient(conn, newClientChan)
-		case client := <-newClientChan:
-			ch <- client
+			go InitClient(conn, ch)
 		}
 	}
 }

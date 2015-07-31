@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"io"
 	"log"
+	"strings"
 )
 
 func Prompt(rw io.ReadWriter, question string) (string, error) {
@@ -25,6 +26,7 @@ func Prompt(rw io.ReadWriter, question string) (string, error) {
 		log.Printf("An error occured reading: %s\n", err.Error())
 		return "", err
 	}
+	ans = strings.TrimSpace(ans)
 
 	return ans, nil
 }
@@ -37,7 +39,7 @@ const NICK_MSG string = "Enter a nickname:\n"
 
 const ROOM_MSG string = "Log in to your team's assigned collaboration channel:\n"
 
-const START_MSG string = string(`/msg all * -- | Everyone has arrived, mission starting...
+const START_MSG string = string(`* -- | Everyone has arrived, mission starting...
 * -- | Ask for /help to get familiar around here
 `)
 
