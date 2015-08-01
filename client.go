@@ -66,7 +66,7 @@ func GetNickname(rw io.ReadWriter) (string, error) {
 		}
 
 		nickname = strings.TrimSpace(nickname)
-		if nickname == "" {
+		if nickname == "" || nickname == "Glenda" {
 			if _, err := bufw.WriteString("Invalid Username\n"); err != nil {
 				log.Printf("Error occuring while writing: %s\n", err.Error())
 				return "", err
@@ -95,7 +95,8 @@ func (c *Client) Start() {
 	c.RWC.Close()
 }
 
-func (c *Client) Close() {
+func (c *Client) End() {
+	c.Game.Rmchan <- c
 	c.Done <- true
 }
 
@@ -111,6 +112,7 @@ func (c *Client) IOHandler(done chan bool) {
 			log.Printf("Input from %s: %s", c.Nickname, line)
 			if err != nil {
 				log.Printf("An error occured while reading: %s\n", err.Error())
+				c.End()
 				return
 			}
 			inputchan <- line
@@ -122,12 +124,12 @@ func (c *Client) IOHandler(done chan bool) {
 		case msg := <-c.Msgchan:
 			if _, err := bufw.WriteString(msg.Text); err != nil {
 				log.Printf("An error occured writing: %s\n", err.Error())
-				c.Close()
+				c.End()
 				return
 			}
 			if err := bufw.Flush(); err != nil {
 				log.Printf("An error occured flushing: %s\n", err.Error())
-				c.Close()
+				c.End()
 				return
 			}
 		case input := <-inputchan:
@@ -196,6 +198,15 @@ func (c *Client) Help() {
 }
 
 func (c *Client) SendMsgTo(to string, text string) {
+	if to == "Glenda" {
+		if text == "done" {
+			c.Game.ClientDoneChan <- c
+			return
+		} else {
+			c.Msgchan <- Message{Text: GLENDA_MSG}
+		}
+		return
+	}
 	for _, client := range c.Game.Clients {
 		if to == client.Nickname {
 			client.Msgchan <- Message{
@@ -206,9 +217,7 @@ func (c *Client) SendMsgTo(to string, text string) {
 			return
 		}
 	}
-	c.Msgchan <- Message{
-		Text: fmt.Sprintf("err -- | %s does not exist\n", to),
-	}
+	c.Msgchan <- Message{Text: fmt.Sprintf("err -- | %s does not exist\n", to)}
 }
 
 func (c *Client) ListFiles() {
@@ -241,6 +250,20 @@ func (c *Client) SendFileTo(to string, filename string) {
 		if file.Filename == filename {
 			foundFile = true
 			i = j
+			if to == "Glenda" {
+				foundClient = true
+				c.Game.Filechan <- file
+				// Use up bandwidth when sending to Glenda
+				c.Bandwidth -= file.Size
+				if c.Bandwidth < 0 {
+					// fail the game
+					c.Game.Status = FAIL
+					c.Game.End()
+				}
+				c.Msgchan <- Message{
+					Text: fmt.Sprintf("send -- | Sent file: %s", file.Filename),
+				}
+			}
 			for _, client := range c.Game.Clients {
 				if to == client.Nickname {
 					foundClient = true
@@ -248,6 +271,7 @@ func (c *Client) SendFileTo(to string, filename string) {
 					break
 				}
 			}
+			break
 		}
 	}
 

@@ -4,7 +4,16 @@ import (
 	"bufio"
 	"fmt"
 	"log"
+	"time"
 )
+
+const (
+	RUNNING = iota
+	FAIL
+	SUCCESS
+)
+
+const MAX_NUM_CLIENTS int = 3
 
 type Message struct {
 	From string
@@ -19,15 +28,15 @@ type File struct {
 }
 
 type Game struct {
-	Name      string
-	Clients   map[string]*Client
-	Addchan   chan *Client
-	Rmchan    chan Client
-	Filechan  chan File
-	Files     []File
-	isStarted bool
-	Failed    bool
-	Done      chan bool
+	Name           string
+	Clients        map[string]*Client
+	Addchan        chan *Client
+	Rmchan         chan *Client
+	ClientDoneChan chan *Client
+	Filechan       chan File
+	Files          []File
+	Status         int
+	Done           chan bool
 }
 
 func GameHandler(clientCh chan *Client) {
@@ -39,8 +48,8 @@ func GameHandler(clientCh chan *Client) {
 			// Join a game
 			gameName, err := Prompt(client.RWC, ROOM_MSG)
 			if err != nil {
-				log.Printf("Error occured while prompting: %s", err.Error())
-				client.Done <- true
+				log.Printf("Error occured while getting room: %s", err.Error())
+				client.End()
 				continue
 			}
 			game, ok := games[gameName]
@@ -60,7 +69,7 @@ func GameHandler(clientCh chan *Client) {
 					To:   client.Nickname,
 					Text: "It seems your teammates have started without you...\n",
 				}
-				client.Close()
+				client.End()
 			}
 		}
 	}
@@ -68,12 +77,13 @@ func GameHandler(clientCh chan *Client) {
 
 func NewGame(name string) *Game {
 	return &Game{
-		Name:      name,
-		Clients:   make(map[string]*Client),
-		Addchan:   make(chan *Client, 5), // TODO do I really need a buffer chan
-		Rmchan:    make(chan Client),
-		Filechan:  make(chan File, 5), // TODO do I really need a buffered chan
-		isStarted: false,
+		Name:           name,
+		Clients:        make(map[string]*Client),
+		ClientDoneChan: make(chan *Client, MAX_NUM_CLIENTS),
+		Addchan:        make(chan *Client, 5), // TODO do I really need a buffer chan
+		Rmchan:         make(chan *Client),
+		Filechan:       make(chan File, 5), // TODO do I really need a buffered chan
+		Done:           make(chan bool, 1),
 	}
 }
 
@@ -116,12 +126,27 @@ func (g *Game) ClientHandler(done chan bool) {
 			}
 		case client := <-g.Rmchan:
 			// TODO cancel game when someone leaves
-			log.Printf("Client left: %s", client.Nickname)
+			log.Printf("%s left %s", client.Nickname, g.Name)
 			g.MsgAll(fmt.Sprintf("--> | %s has left %s, exiting game...\n", client.Nickname, client.Game.Name))
 			delete(g.Clients, client.Nickname)
 			g.End()
 		}
 	}
+}
+
+func (g *Game) ClientDoneHandler(done chan bool) {
+	for i := 0; i < MAX_NUM_CLIENTS; i++ {
+		select {
+		case client := <-g.ClientDoneChan:
+			log.Printf("Client %s has finished sending files", client.Nickname)
+			log.Printf("iter %d", i)
+		case <-done:
+			return
+		}
+	}
+	log.Println("line 145")
+	g.Status = SUCCESS
+	g.End()
 }
 
 func (g *Game) FileHandler(done chan bool) {
@@ -140,21 +165,29 @@ func (g *Game) Init() {
 	done := make(chan bool)
 	go g.FileHandler(done)
 	go g.ClientHandler(done)
+	go g.ClientDoneHandler(done)
 
 	<-g.Done
-	if g.Failed {
+	log.Printf("ending game line 168")
+	switch g.Status {
+	case RUNNING:
+		for _, c := range g.Clients {
+			c.Msgchan <- Message{Text: "One of your teamates chickent out. Ending game..."}
+		}
+	case FAIL:
 		for _, c := range g.Clients {
 			c.Msgchan <- Message{Text: FAIL_MSG}
-			c.Done <- true
 		}
-	} else {
+	case SUCCESS:
 		// TODO calculate score
 		score := 100
 		for _, c := range g.Clients {
 			c.Msgchan <- Message{Text: fmt.Sprintf("Game ended. Score %d", score)}
-			c.Done <- true
 		}
 	}
+	time.Sleep(time.Second)
+	// end goroutines
+	done <- true
 	done <- true
 	done <- true
 }
@@ -162,7 +195,7 @@ func (g *Game) Init() {
 func (g *Game) Start() {
 	log.Printf("Starting game %s", g.Name)
 	g.LoadFilesIntoClients()
-	g.isStarted = true
+	g.Status = RUNNING
 	g.MsgAll(START_MSG)
 }
 
