@@ -39,6 +39,8 @@ const NICK_MSG string = "Enter a nickname:\n"
 
 const ROOM_MSG string = "Log in to your team's assigned collaboration channel:\n"
 
+const FULL_MSG string = "It seems your teammates have started without you. Exiting..."
+
 const START_MSG string = string(`* -- | Everyone has arrived, mission starting...
 * -- | Ask for /help to get familiar around here
 `)

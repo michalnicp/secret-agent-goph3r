@@ -9,17 +9,15 @@ import (
 )
 
 func main() {
-	clientChan := make(chan *Client, 100)
 	connChan := make(chan net.Conn, 100)
-	go ConnectionHandler(connChan, clientChan)
-	go GameHandler(clientChan)
+	go GameHandler(connChan)
 
 	server := &Server{
 		Type: "tcp",
 		Host: "127.0.0.1",
 		Port: 6000,
 	}
-	server.Start(connChan)
+	server.Run(connChan)
 }
 
 type Server struct {
@@ -28,7 +26,7 @@ type Server struct {
 	Port int
 }
 
-func (s *Server) Start(connChan chan net.Conn) {
+func (s *Server) Run(connChan chan net.Conn) {
 	address := s.Host + ":" + strconv.Itoa(s.Port)
 	ln, err := net.Listen(s.Type, address)
 	if err != nil {
@@ -45,14 +43,5 @@ func (s *Server) Start(connChan chan net.Conn) {
 		}
 		log.Printf("New connection from %v", conn.RemoteAddr())
 		connChan <- conn
-	}
-}
-
-func ConnectionHandler(c <-chan net.Conn, ch chan *Client) {
-	for {
-		select {
-		case conn := <-c:
-			go InitClient(conn, ch)
-		}
 	}
 }
