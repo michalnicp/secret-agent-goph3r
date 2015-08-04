@@ -10,7 +10,10 @@ import (
 
 func main() {
 	connChan := make(chan net.Conn, 100)
-	go GameHandler(connChan)
+	gameRequestCh := make(chan GameRequest, 100)
+
+	go ConnectionHandler(connChan, gameRequestCh)
+	go GameHandler(gameRequestCh)
 
 	server := &Server{
 		Type: "tcp",

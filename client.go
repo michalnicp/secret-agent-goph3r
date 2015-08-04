@@ -7,47 +7,42 @@ import (
 	"log"
 	"regexp"
 	"strings"
-	"sync"
+	"time"
 )
 
 type Client struct {
 	RWC              io.ReadWriteCloser
-	Nickname         string
-	MsgChan          chan Message
-	FileChan         chan File
-	InputChan        chan string
+	Name             string
+	MsgCh            chan Message
+	FileCh           chan File
+	InputCh          chan string
 	Files            []File
-	Bandwidth        int
 	DoneSendingFiles bool
+	Bandwidth        int
 	Game             *Game
 	Done             chan bool
 }
 
-func NewClient(rwc io.ReadWriteCloser, nickname string) *Client {
+func NewClient(rwc io.ReadWriteCloser) *Client {
 	return &Client{
-		RWC:              rwc,
-		Nickname:         nickname,
-		MsgChan:          make(chan Message, 10), // TODO do I need a buff chan
-		FileChan:         make(chan File),
-		InputChan:        make(chan string),
-		Files:            make([]File, 0),
-		Bandwidth:        100,
-		DoneSendingFiles: false,
-		Done:             make(chan bool),
-		Game:             &Game{},
+		RWC:     rwc,
+		MsgCh:   make(chan Message, 10), // TODO do I need a buff chan
+		FileCh:  make(chan File),
+		InputCh: make(chan string),
+		Files:   make([]File, 0),
+		Done:    make(chan bool),
 	}
 }
 
-func GetNickname(rw io.ReadWriter) (string, error) {
-	bufw := bufio.NewWriter(rw)
+func (c *Client) GetName() (string, error) {
+	bufw := bufio.NewWriter(c.RWC)
 	for {
-		nickname, err := Prompt(rw, NICK_MSG)
+		name, err := c.Prompt(NICK_MSG)
 		if err != nil {
 			return "", err
 		}
 
-		nickname = strings.TrimSpace(nickname)
-		if nickname == "" || nickname == "Glenda" {
+		if name == "" || name == "Glenda" {
 			if _, err := bufw.WriteString("Invalid Username\n"); err != nil {
 				log.Printf("Error occuring while writing: %s\n", err.Error())
 				return "", err
@@ -58,28 +53,28 @@ func GetNickname(rw io.ReadWriter) (string, error) {
 			}
 			continue
 		}
-		return nickname, nil
+		return name, nil
 	}
 }
 
 func (c *Client) Start() {
-	var wg sync.WaitGroup
-
-	wg.Add(2)
-	go c.MsgHandler(&wg)
-	go c.FileHandler(&wg)
-
-	// InputHandler is closed by closing the RWC connection
+	go c.MsgHandler()
+	go c.FileHandler()
 	go c.InputHandler()
-
-	wg.Wait()
-	c.RWC.Close()
 }
 
 func (c *Client) End() {
-	close(c.MsgChan)
-	close(c.FileChan)
-	close(c.InputChan)
+	//TODO if client has already left via ctrl-C, this panics
+	//TODO flush channels before closing
+	time.Sleep(1)
+	if c.Game != nil {
+		c.Game.RmCh <- c
+	}
+	//close(c.MsgCh)
+	//close(c.FileCh)
+	//close(c.InputCh)
+	c.RWC.Close()
+	log.Printf("closed client %s", c.Name)
 }
 
 func (c *Client) InputHandler() {
@@ -87,30 +82,33 @@ func (c *Client) InputHandler() {
 
 	// Go routine to handle input, non blocking
 	// TODO rewrite to use net.conn timeout feature
-	// TODO ignore input before starting client
 	go func() {
 		for {
 			line, err := bufr.ReadString('\n')
-			log.Printf("Input from %s: %s", c.Nickname, line)
 			if err != nil {
 				log.Printf("An error occured while reading: %s\n", err.Error())
-				close(c.InputChan)
+				c.End()
 				return
 			}
-			c.InputChan <- line
+			c.InputCh <- line
 		}
 	}()
 
-	for input := range c.InputChan {
+	for input := range c.InputCh {
 		c.ParseInput(input)
 	}
 }
 
 func (c *Client) ParseInput(input string) {
-	re := regexp.MustCompile(`(\/\w+) *(\w*) *(.*)`)
+	// Toss input if game is in lobby status
+	if c.Game.Status == LOBBY {
+		return
+	}
+
+	re := regexp.MustCompile(`(\/\w+) *(\S*) *(.*)`)
 	reResult := re.FindStringSubmatch(input)
 	if reResult == nil {
-		c.MsgChan <- Message{
+		c.MsgCh <- Message{
 			Text: "err -- | Invalid command, try /help to see valid commands\n",
 		}
 		return
@@ -130,31 +128,33 @@ func (c *Client) ParseInput(input string) {
 	case "/look":
 		c.Look()
 	default:
-		c.MsgChan <- Message{
+		c.MsgCh <- Message{
 			Text: "err -- | Invalid command, try /help to see valid commands\n",
 		}
 	}
 }
 
-func (c *Client) FileHandler(wg *sync.WaitGroup) {
+func (c *Client) FileHandler() {
 	bufw := bufio.NewWriter(c.RWC)
-	for f := range c.FileChan {
+	for f := range c.FileCh {
 		if _, err := bufw.WriteString(fmt.Sprintf("send -- | Received file: %s\n", f.Filename)); err != nil {
 			log.Printf("An error occured writing: %s\n", err.Error())
+			c.End()
+			return
 		}
-
 		if err := bufw.Flush(); err != nil {
 			log.Printf("An error occured flushing: %s\n", err.Error())
+			c.End()
+			return
 		}
 
 		c.Files = append(c.Files, f)
 	}
-	wg.Done()
 }
 
-func (c *Client) MsgHandler(wg *sync.WaitGroup) {
+func (c *Client) MsgHandler() {
 	bufw := bufio.NewWriter(c.RWC)
-	for msg := range c.MsgChan {
+	for msg := range c.MsgCh {
 		if _, err := bufw.WriteString(msg.Text); err != nil {
 			log.Printf("An error occured writing: %s\n", err.Error())
 			c.End()
@@ -166,35 +166,18 @@ func (c *Client) MsgHandler(wg *sync.WaitGroup) {
 			return
 		}
 	}
-	wg.Done()
 }
 
 func (c *Client) Help() {
-	c.MsgChan <- Message{Text: HELP_MSG}
+	c.MsgCh <- Message{Text: HELP_MSG}
 }
 
 func (c *Client) SendMsgTo(to string, text string) {
-	if to == "Glenda" {
-		if text == "done" {
-			c.DoneSendingFiles = true
-			c.Game.WG.Done()
-			return
-		} else {
-			c.MsgChan <- Message{Text: GLENDA_MSG}
-		}
-		return
+	c.Game.MsgCh <- Message{
+		From: c.Name,
+		To:   to,
+		Text: text,
 	}
-	for _, client := range c.Game.Clients {
-		if to == client.Nickname {
-			client.MsgChan <- Message{
-				From: c.Nickname,
-				To:   to,
-				Text: fmt.Sprintf("%s | %s\n", c.Nickname, text),
-			}
-			return
-		}
-	}
-	c.MsgChan <- Message{Text: fmt.Sprintf("err -- | %s does not exist\n", to)}
 }
 
 func (c *Client) ListFiles() {
@@ -202,6 +185,8 @@ func (c *Client) ListFiles() {
 	_, err := bufw.WriteString(fmt.Sprintf("list -- | Remaining Bandwidth: %d KB\n", c.Bandwidth))
 	if err != nil {
 		log.Printf("Error occured while writing: %s", err.Error())
+		c.End()
+		return
 	}
 
 	_, err = bufw.WriteString(fmt.Sprintf("list -- | %20s  %8s  %13s\n", "Filename", "Size", "Secrecy Value"))
@@ -209,19 +194,20 @@ func (c *Client) ListFiles() {
 		_, err = bufw.WriteString(fmt.Sprintf("list -- | %20s  %5d KB  %13d\n", f.Filename, f.Size, f.Secrecy))
 		if err != nil {
 			log.Printf("Error occured while writing: %s", err.Error())
+			c.End()
+			return
 		}
 	}
 
 	if err := bufw.Flush(); err != nil {
 		log.Printf("An error occured flushing: %s\n", err.Error())
+		c.End()
+		return
 	}
 }
 
 func (c *Client) SendFileTo(to string, filename string) {
-	if c.DoneSendingFiles {
-		return
-	}
-	// TODO rewrite better function
+	// TODO rewrite to instead route file through server
 	foundFile := false
 	foundClient := false
 
@@ -232,22 +218,22 @@ func (c *Client) SendFileTo(to string, filename string) {
 			i = j
 			if to == "Glenda" {
 				foundClient = true
-				c.Game.FileChan <- file
 				// Use up bandwidth when sending to Glenda
+				c.Game.FileCh <- file
 				c.Bandwidth -= file.Size
 				if c.Bandwidth < 0 {
 					// fail the game
 					c.Game.Status = FAIL
-					c.Game.End()
+					return
 				}
-				c.MsgChan <- Message{
-					Text: fmt.Sprintf("send -- | Sent file: %s", file.Filename),
+				c.MsgCh <- Message{
+					Text: fmt.Sprintf("send -- | Sent file: %s\n", file.Filename),
 				}
 			}
 			for _, client := range c.Game.Clients {
-				if to == client.Nickname {
+				if to == client.Name {
 					foundClient = true
-					client.FileChan <- file
+					client.FileCh <- file
 					break
 				}
 			}
@@ -256,13 +242,13 @@ func (c *Client) SendFileTo(to string, filename string) {
 	}
 
 	if !foundFile {
-		c.MsgChan <- Message{
-			Text: fmt.Sprintf("err -- | Error sending file: file \"%s\" does not exist", filename),
+		c.MsgCh <- Message{
+			Text: fmt.Sprintf("err -- | Error sending file: file \"%s\" does not exist\n", filename),
 		}
 		return
 	}
 	if !foundClient {
-		c.MsgChan <- Message{
+		c.MsgCh <- Message{
 			Text: fmt.Sprintf("err -- | Error sending file: client \"%s\" does not exist", to),
 		}
 		return
@@ -283,8 +269,46 @@ func (c *Client) SendFileTo(to string, filename string) {
 func (c *Client) Look() {
 	lookText := "look -- | You look around at your co-workers' nametages:\n"
 	for _, client := range c.Game.Clients {
-		lookText += ("look -- | " + client.Nickname + "\n")
+		lookText += ("look -- | " + client.Name + "\n")
 	}
 	lookText += "look -- | Glenda\n"
-	c.MsgChan <- Message{Text: lookText}
+	c.MsgCh <- Message{Text: lookText}
+}
+
+func (c *Client) WriteString(text string) error {
+	bufw := bufio.NewWriter(c.RWC)
+	if _, err := bufw.WriteString(text); err != nil {
+		log.Printf("Error occured while writing: %s", err.Error())
+		return err
+	}
+
+	if err := bufw.Flush(); err != nil {
+		log.Printf("An error occured flushing: %s\n", err.Error())
+		return err
+	}
+	return nil
+}
+
+func (c *Client) ReadLine() (string, error) {
+	bufr := bufio.NewReader(c.RWC)
+	line, err := bufr.ReadString('\n')
+	if err != nil {
+		log.Printf("An error occured reading: %s\n", err.Error())
+		return "", err
+	}
+	line = strings.TrimSpace(line)
+
+	return line, nil
+}
+
+func (c *Client) Prompt(question string) (string, error) {
+	if err := c.WriteString(question); err != nil {
+		return "", err
+	}
+
+	ans, err := c.ReadLine()
+	if err != nil {
+		return "", err
+	}
+	return ans, nil
 }
