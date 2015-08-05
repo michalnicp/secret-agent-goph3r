@@ -7,12 +7,12 @@ import (
 	"log"
 	"regexp"
 	"strings"
-	"time"
 )
 
 type Client struct {
 	RWC              io.ReadWriteCloser
 	Name             string
+	ErrCh            chan error
 	MsgCh            chan Message
 	FileCh           chan File
 	InputCh          chan string
@@ -26,6 +26,7 @@ type Client struct {
 func NewClient(rwc io.ReadWriteCloser) *Client {
 	return &Client{
 		RWC:     rwc,
+		ErrCh:   make(chan error, 10),
 		MsgCh:   make(chan Message, 10), // TODO do I need a buff chan
 		FileCh:  make(chan File),
 		InputCh: make(chan string),
@@ -58,6 +59,7 @@ func (c *Client) GetName() (string, error) {
 }
 
 func (c *Client) Start() {
+	go c.ErrHandler()
 	go c.MsgHandler()
 	go c.FileHandler()
 	go c.InputHandler()
@@ -66,15 +68,24 @@ func (c *Client) Start() {
 func (c *Client) End() {
 	//TODO if client has already left via ctrl-C, this panics
 	//TODO flush channels before closing
-	time.Sleep(1)
 	if c.Game != nil {
 		c.Game.RmCh <- c
 	}
-	//close(c.MsgCh)
-	//close(c.FileCh)
-	//close(c.InputCh)
+	close(c.Done)
 	c.RWC.Close()
 	log.Printf("closed client %s", c.Name)
+}
+
+func (c *Client) ErrHandler() {
+	for {
+		select {
+		case err := <-c.ErrCh:
+			log.Printf("Error: %s", err.Error())
+			c.End()
+		case <-c.Done:
+			return
+		}
+	}
 }
 
 func (c *Client) InputHandler() {
@@ -86,16 +97,20 @@ func (c *Client) InputHandler() {
 		for {
 			line, err := bufr.ReadString('\n')
 			if err != nil {
-				log.Printf("An error occured while reading: %s\n", err.Error())
-				c.End()
+				c.ErrCh <- err
 				return
 			}
 			c.InputCh <- line
 		}
 	}()
 
-	for input := range c.InputCh {
-		c.ParseInput(input)
+	for {
+		select {
+		case input := <-c.InputCh:
+			c.ParseInput(input)
+		case <-c.Done:
+			return
+		}
 	}
 }
 
@@ -136,33 +151,39 @@ func (c *Client) ParseInput(input string) {
 
 func (c *Client) FileHandler() {
 	bufw := bufio.NewWriter(c.RWC)
-	for f := range c.FileCh {
-		if _, err := bufw.WriteString(fmt.Sprintf("send -- | Received file: %s\n", f.Filename)); err != nil {
-			log.Printf("An error occured writing: %s\n", err.Error())
-			c.End()
-			return
-		}
-		if err := bufw.Flush(); err != nil {
-			log.Printf("An error occured flushing: %s\n", err.Error())
-			c.End()
-			return
-		}
+	for {
+		select {
+		case f := <-c.FileCh:
+			if _, err := bufw.WriteString(fmt.Sprintf("send -- | Received file: %s\n", f.Filename)); err != nil {
+				c.ErrCh <- err
+				continue
+			}
+			if err := bufw.Flush(); err != nil {
+				c.ErrCh <- err
+				continue
+			}
 
-		c.Files = append(c.Files, f)
+			c.Files = append(c.Files, f)
+		case <-c.Done:
+			return
+		}
 	}
 }
 
 func (c *Client) MsgHandler() {
 	bufw := bufio.NewWriter(c.RWC)
-	for msg := range c.MsgCh {
-		if _, err := bufw.WriteString(msg.Text); err != nil {
-			log.Printf("An error occured writing: %s\n", err.Error())
-			c.End()
-			return
-		}
-		if err := bufw.Flush(); err != nil {
-			log.Printf("An error occured flushing: %s\n", err.Error())
-			c.End()
+	for {
+		select {
+		case msg := <-c.MsgCh:
+			if _, err := bufw.WriteString(msg.Text); err != nil {
+				c.ErrCh <- err
+				continue
+			}
+			if err := bufw.Flush(); err != nil {
+				c.ErrCh <- err
+				continue
+			}
+		case <-c.Done:
 			return
 		}
 	}
@@ -184,8 +205,7 @@ func (c *Client) ListFiles() {
 	bufw := bufio.NewWriter(c.RWC)
 	_, err := bufw.WriteString(fmt.Sprintf("list -- | Remaining Bandwidth: %d KB\n", c.Bandwidth))
 	if err != nil {
-		log.Printf("Error occured while writing: %s", err.Error())
-		c.End()
+		c.ErrCh <- err
 		return
 	}
 
@@ -193,15 +213,13 @@ func (c *Client) ListFiles() {
 	for _, f := range c.Files {
 		_, err = bufw.WriteString(fmt.Sprintf("list -- | %20s  %5d KB  %13d\n", f.Filename, f.Size, f.Secrecy))
 		if err != nil {
-			log.Printf("Error occured while writing: %s", err.Error())
-			c.End()
+			c.ErrCh <- err
 			return
 		}
 	}
 
 	if err := bufw.Flush(); err != nil {
-		log.Printf("An error occured flushing: %s\n", err.Error())
-		c.End()
+		c.ErrCh <- err
 		return
 	}
 }
