@@ -18,7 +18,7 @@ const (
 )
 
 const MAX_NUM_CLIENTS int = 3
-const TIMEOUT int = 300
+const TIMEOUT int = 60
 
 type Message struct {
 	From string
@@ -257,7 +257,6 @@ func (g *Game) MsgHandler() {
 	for msg := range g.MsgCh {
 		from := g.Clients[msg.From]
 		if msg.To == "Glenda" {
-			log.Printf("msg text \"%s\"", msg.Text)
 			if msg.Text == "done" {
 				from.DoneSendingFiles = true
 				g.DoneClient <- true
@@ -272,7 +271,7 @@ func (g *Game) MsgHandler() {
 			msg.Text = fmt.Sprintf("%s | %s\n", msg.From, msg.Text)
 			to.MsgCh <- msg
 		} else {
-			from.MsgCh <- Message{Text: fmt.Sprintf("Client \"%s\"does not exist\n", msg.To)}
+			from.MsgCh <- Message{Text: fmt.Sprintf("err -- | Client \"%s\" does not exist\n", msg.To)}
 		}
 	}
 }

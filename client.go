@@ -125,7 +125,7 @@ func (c *Client) ParseInput(input string) {
 		return
 	}
 
-	re := regexp.MustCompile(`(\/\w+) *(\S*) *(.*)`)
+	re := regexp.MustCompile(`^(\/\w+) *(\S*) *(.*)$`)
 	reResult := re.FindStringSubmatch(input)
 	if reResult == nil {
 		c.MsgCh <- Message{
@@ -231,6 +231,12 @@ func (c *Client) ListFiles() {
 
 func (c *Client) SendFileTo(to string, filename string) {
 	// TODO rewrite to instead route file through server
+	if c.DoneSendingFiles {
+		c.MsgCh <- Message{
+			Text: "err -- | I thought you said you were done sending files.\n",
+		}
+		return
+	}
 	foundFile := false
 	foundClient := false
 
@@ -248,9 +254,6 @@ func (c *Client) SendFileTo(to string, filename string) {
 					// fail the game
 					c.Game.Status = FAIL
 					return
-				}
-				c.MsgCh <- Message{
-					Text: fmt.Sprintf("send -- | Sent file: %s\n", file.Filename),
 				}
 			}
 			for _, client := range c.Game.Clients {
@@ -276,6 +279,9 @@ func (c *Client) SendFileTo(to string, filename string) {
 		}
 		return
 	}
+	c.MsgCh <- Message{
+		Text: fmt.Sprintf("send -- | Sent file: %s\nsend -- | Bandwidth remaining: %s\n", filename, c.Bandwidth),
+	}
 
 	files := c.Files
 	newFiles := make([]File, 0, len(files)-1)
@@ -290,7 +296,7 @@ func (c *Client) SendFileTo(to string, filename string) {
 }
 
 func (c *Client) Look() {
-	lookText := "look -- | You look around at your co-workers' nametages:\n"
+	lookText := "look -- | You look around at your co-workers' nametags:\n"
 	for _, client := range c.Game.Clients {
 		lookText += ("look -- | " + client.Name + "\n")
 	}

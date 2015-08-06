@@ -9,6 +9,8 @@ import (
 )
 
 func main() {
+	InitLogger()
+
 	connChan := make(chan net.Conn, 100)
 	gameRequestCh := make(chan GameRequest, 100)
 
@@ -17,7 +19,7 @@ func main() {
 
 	server := &Server{
 		Type: "tcp",
-		Host: "127.0.0.1",
+		Host: "",
 		Port: 6000,
 	}
 	server.Run(connChan)
@@ -47,4 +49,23 @@ func (s *Server) Run(connChan chan net.Conn) {
 		log.Printf("New connection from %v", conn.RemoteAddr())
 		connChan <- conn
 	}
+}
+
+func GetPort() string {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "6000"
+		log.Printf("No PORT environment variable, setting to %s", port)
+	}
+	return ":" + port
+}
+
+func InitLogger() {
+	f, err := os.OpenFile("sag.log", os.O_APPEND|os.O_CREATE|os.O_RDWR, 0666)
+	if err != nil {
+		fmt.Printf("error opening file: %v", err)
+	}
+	defer f.Close()
+
+	log.SetOutput(f)
 }
