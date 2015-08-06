@@ -37,11 +37,14 @@ func NewClient(rwc io.ReadWriteCloser) *Client {
 
 func (c *Client) GetName() (string, error) {
 	bufw := bufio.NewWriter(c.RWC)
+	re := regexp.MustCompile(`^\w+$`)
 	for {
 		name, err := c.Prompt(NICK_MSG)
 		if err != nil {
 			return "", err
 		}
+
+		name = re.FindString(name)
 
 		if name == "" || name == "Glenda" {
 			if _, err := bufw.WriteString("Invalid Username\n"); err != nil {
@@ -73,7 +76,7 @@ func (c *Client) End() {
 	}
 	close(c.Done)
 	c.RWC.Close()
-	log.Printf("closed client %s", c.Name)
+	log.Printf("Closed client %s", c.Name)
 }
 
 func (c *Client) ErrHandler() {

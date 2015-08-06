@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"log"
 	"math/rand"
 	"net"
+	"regexp"
 	"time"
 )
 
@@ -16,6 +18,7 @@ const (
 )
 
 const MAX_NUM_CLIENTS int = 3
+const TIMEOUT int = 300
 
 type Message struct {
 	From string
@@ -75,19 +78,36 @@ func ConnectionHandler(connCh chan net.Conn, gameRequestCh chan GameRequest) {
 
 func JoinGame(client *Client, gameRequestCh chan GameRequest) {
 	// Get game name from client. Send request for game and then join it
-	gameName, err := client.Prompt(ROOM_MSG)
-	if err != nil {
-		log.Printf("Error occured while getting room: %s", err.Error())
+	bufw := bufio.NewWriter(client.RWC)
+	re := regexp.MustCompile(`^\w+$`)
+	for {
+		gameName, err := client.Prompt(ROOM_MSG)
+		if err != nil {
+			log.Printf("Error occured while getting room: %s", err.Error())
+			return
+		}
+
+		gameName = re.FindString(gameName)
+		if gameName == "" {
+			if _, err := bufw.WriteString("Invalid channel\n"); err != nil {
+				log.Printf("Error occuring while writing: %s\n", err.Error())
+				return
+			}
+			if err := bufw.Flush(); err != nil {
+				log.Printf("Error occured while flushing: %s\n", err.Error())
+				return
+			}
+			continue
+		}
+		ch := make(chan *Game)
+		gameRequestCh <- GameRequest{
+			Name: gameName,
+			Ch:   ch,
+		}
+		game := <-ch
+		game.AddCh <- client
 		return
 	}
-
-	ch := make(chan *Game)
-	gameRequestCh <- GameRequest{
-		Name: gameName,
-		Ch:   ch,
-	}
-	game := <-ch
-	game.AddCh <- client
 }
 
 func GameHandler(requestCh chan GameRequest) {
@@ -125,7 +145,8 @@ func (g *Game) Start(done chan *Game) {
 loop:
 	for {
 		select {
-		case <-time.After(time.Second * 30):
+		case <-time.After(time.Duration(TIMEOUT) * time.Second):
+			log.Printf("Game %s has timed out", g.Name)
 			g.Status = FAIL
 			break loop
 		case <-g.DoneClient:
