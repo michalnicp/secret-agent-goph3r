@@ -7,6 +7,7 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"time"
 )
 
 type Client struct {
@@ -74,6 +75,7 @@ func (c *Client) End() {
 	if c.Game != nil {
 		c.Game.RmCh <- c
 	}
+	time.Sleep(1)
 	close(c.Done)
 	c.RWC.Close()
 	log.Printf("Closed client %s", c.Name)
